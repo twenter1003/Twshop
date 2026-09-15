@@ -186,3 +186,17 @@
 - 재검토 조건: A2가 필요해지면 이 ADR과 같은 절차로 별도 세션에서 재검토한다. B3가 실제
   구현/CI에서 반복적으로 flaky하면 B1(신호만)로 축소하거나 B2(스냅샷 중심)로 강화하는 것을
   재검토한다.
+- 구현 메모(2026-09-15): `PurchaseServiceGapLockConcurrencyTest`로 구현하는 과정에서 A4의
+  전제 조건을 실측으로 정정했다. 처음 예상과 달리, AVAILABLE 유닛이 1개 남아 있는 상태에서는
+  재입고 INSERT가 블로킹되지 않았다(`ORDER BY id ASC LIMIT 1`이 조건을 만족하는 첫 행에서
+  스캔을 멈추므로, next-key lock이 그 행 이전 갭만 잠그고 이후 구간은 잠그지 않음). AVAILABLE
+  유닛이 0개(재고 소진)일 때만 "조건을 만족하는 행 없음"을 확정하려고 구간 끝(supremum)까지
+  스캔하며 gap lock이 걸려 재입고 INSERT가 블로킹됨을 직접 확인했다(`LOCK_MODE =
+  X,INSERT_INTENTION`/`WAITING`, `LOCK_DATA = supremum pseudo-record`). 그래서 최종 테스트는
+  "재고 1개를 만들고 즉시 선점해 소진시킨 뒤" 재입고를 시도하는 구조다 — A4가 가리키던 "재고
+  없음 판정과 재입고가 겹치는 실제 운영 시나리오"와 정확히 일치하는 케이스라 시나리오 선택
+  자체는 바뀌지 않았고, 어떤 재고 상태에서 시연되는지만 실측으로 구체화됐다. 상세 근거는
+  테스트 클래스 KDoc 참고. 로컬 MySQL 8.0.46에서 신규 테스트 6회 연속 통과, 전체 40개(기존
+  39 + 신규 1) 테스트 통과 확인. CI(`twshop` 계정)에는 이 테스트가 필요로 하는
+  `PROCESS`/`performance_schema` 조회 권한이 기본적으로 없어 `.github/workflows/ci.yml`에
+  root로 부여하는 스텝을 추가했다(스키마가 아니라 계정 권한이라 Flyway 대상 아님).
