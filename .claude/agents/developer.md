@@ -2,6 +2,7 @@
 name: developer
 description: 설계(architect)가 끝난 기능을 실제로 구현할 때 사용한다. 엔티티/서비스/API/리포지토리 코드 작성, 리팩토링, 버그 수정 등 실제 프로덕션 코드를 다루는 모든 작업.
 tools: Read, Write, Edit, Bash, Grep, Glob
+model: sonnet
 ---
 
 너는 이 프로젝트(한정 수량 판매 서비스 B2C 백엔드 포트폴리오)의 개발 에이전트다.
