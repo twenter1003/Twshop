@@ -42,6 +42,23 @@ kotlin {
 	}
 }
 
-tasks.withType<Test> {
-	useJUnitPlatform()
+tasks.test {
+	// "benchmark" 태그: 타이밍에 의존하는 동시성 벤치마크(예: PurchaseReserveBenchmark)는
+	// CI에서 반복 안정성을 보장하지 않으므로 기본 test 태스크에서 제외하고 수동 실행한다.
+	useJUnitPlatform {
+		excludeTags("benchmark")
+	}
+}
+
+val benchmarkTest by tasks.registering(Test::class) {
+	description = "동시성 벤치마크(@Tag(\"benchmark\"))만 실행한다."
+	group = "verification"
+	testClassesDirs = sourceSets["test"].output.classesDirs
+	classpath = sourceSets["test"].runtimeClasspath
+	useJUnitPlatform {
+		includeTags("benchmark")
+	}
+	testLogging {
+		showStandardStreams = true
+	}
 }
