@@ -71,3 +71,39 @@ planner 서브에이전트에게 스코프를 물어봤고, 다음을 제안받�
 4. 끝나면 /checkpoint로 요약해라.
 
 지금 진행해도 좋은지 먼저 계획만 3~5줄로 보여주고, 내가 승인하면 시작해라.
+
+---
+
+# Phase 3 후속 세션 킥오프 프롬프트 (status 컬럼 ENUM → VARCHAR 전환)
+
+Phase 2 후속(테스트를 실제 MySQL로 검증)이 끝나 PR #3으로 올라가 있는 다음 세션에서 이어서 쓴다.
+
+---
+
+이 프로젝트는 CLAUDE.md에 정의된 원칙을 따라 진행한다.
+PR #3(MySQL CI 전환 + Flyway 도입)이 올라가 있으니 머지 여부와 리뷰 코멘트를 먼저 확인해라.
+
+이전 세션에서 `docs/decisions.md`에 다음 결정을 기록해뒀다 (`[2026-09-15] status 컬럼
+(InventoryUnit.status, PurchaseAttempt.status) 타입` 항목 참고, 기록만 하고 구현은 하지 않음):
+- `InventoryUnit.status`, `PurchaseAttempt.status`가 현재 MySQL 네이티브 `ENUM(...)`으로
+  매핑돼 있는데(Flyway baseline `V1__baseline_schema.sql`이 Hibernate 자동 생성 결과를 그대로
+  옮긴 부작용), `VARCHAR(20)` + Kotlin enum(애플리케이션 레벨 검증) 방식으로 바꾸기로 결정했다.
+- 이유: 단일 애플리케이션만 이 DB에 쓰는 구조라 ENUM의 DB 레벨 방어 실익이 낮고, ENUM은
+  상태값 추가 시 코드/DB 이중 관리가 필요한데 그 동기화가 깨져도 `ddl-auto: validate`가
+  잡아주지 못한다는 걸 QA가 실험으로 확인했다(테스트가 조용히 통과함).
+
+## 이번 세션 범위
+1. Flyway `V2__*.sql` 마이그레이션 작성: `inventory_unit.status`, `purchase_attempt.status`를
+   `VARCHAR(20) NOT NULL`로 변경.
+2. 기존 39개 테스트가 이 변경 후에도 전부 통과하는지 실제 MySQL 위에서 확인 (H2로 돌리지
+   마라 — Phase 2 후속에서 이미 테스트 프로필을 MySQL로 전환해뒀다).
+3. `/checkpoint`로 요약.
+
+## 스코프 밖 (건드리지 마라, 이미 두 세션째 미뤄진 항목)
+- `PurchaseReserveBenchmark`를 autocannon 기반 실부하테스트로 전환 (새 툴체인 도입, 별도 `/decide` 필요)
+- MySQL 고유 락(gap lock 등)을 겨냥한 신규 동시성 테스트
+- 테스트 피라미드 공식화
+- 이 세 가지를 계속 미룰지, 이번엔 착수할지는 이 세션 시작 시 사용자에게 먼저 물어봐라
+  (두 세션 연속 미뤄진 상태라 계속 미루는 게 맞는지 확인이 필요하다).
+
+지금 진행해도 좋은지 먼저 계획만 3~5줄로 보여주고, 내가 승인하면 시작해라.

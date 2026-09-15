@@ -27,12 +27,15 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
+	implementation("org.flywaydb:flyway-core")
+	// Flyway 10부터 DB별 드라이버가 flyway-core에서 분리됐다 (Flyway 10 release notes).
+	// MySQL 스키마를 다루므로 flyway-mysql이 없으면 마이그레이션 자체가 실패한다.
+	implementation("org.flywaydb:flyway-mysql")
 
 	runtimeOnly("com.mysql:mysql-connector-j")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-	testImplementation("com.h2database:h2")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -24,9 +24,10 @@ import kotlin.test.assertTrue
  * 경합 상황이 재현되는데, 테스트 전체를 하나의 트랜잭션으로 감싸면 모든 스레드가 같은
  * 커넥션/트랜잭션을 공유하게 되어 검증하려는 상황 자체가 사라진다.
  *
- * H2(MODE=MySQL)로 `FOR UPDATE` 락이 스레드를 블로킹했다가 커밋 후 조건을 재평가하는 것까지는
- * 확인했지만, 락 대기시간·데드락 같은 InnoDB 고유 동작까지 MySQL과 동일하다고 보장하지는
- * 않는다. 이 테스트는 "중복 선점이 없다"는 애플리케이션 레벨 불변식만 검증한다.
+ * `FOR UPDATE` 락이 스레드를 블로킹했다가 커밋 후 조건을 재평가하는 것까지는 실제 MySQL
+ * 위에서 확인했지만(2026-09-15 CI를 MySQL 기준으로 전환, docs/decisions.md 참고), 락
+ * 대기시간·데드락 같은 InnoDB 갭 락 고유 동작을 겨냥한 테스트는 아니다. 이 테스트는
+ * "중복 선점이 없다"는 애플리케이션 레벨 불변식만 검증한다.
  */
 @SpringBootTest
 class PurchaseServiceConcurrencyTest @Autowired constructor(

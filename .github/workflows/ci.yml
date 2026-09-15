@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # 테스트 프로필(src/test/resources/application.yml)이 H2가 아니라 실제 MySQL을 바라보도록
+    # 전환했기 때문에(2026-09-15 결정, docs/decisions.md 참고), CI에서도 서비스 컨테이너로
+    # MySQL을 직접 띄워야 `./gradlew test`가 통과한다.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: twshop
+          MYSQL_USER: twshop
+          MYSQL_PASSWORD: twshop
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 3306:3306
+        # 애플리케이션 컨테이너보다 MySQL이 늦게 준비되는 경우가 흔해서, 포트가 열렸는지가
+        # 아니라 실제로 쿼리를 받을 수 있는지(healthcheck)를 기준으로 기다린다.
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -utwshop -ptwshop"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: twshop
+      DB_USERNAME: twshop
+      DB_PASSWORD: twshop
+      # 테스트 이름에 한글을 쓰는 관례(예: `초기 수량이 0 이하면 생성할 수 없다`)가 있어,
+      # 러너의 기본 로케일이 UTF-8이 아니면 Kotlin 컴파일러가 클래스 파일 경로를 만들다가
+      # 깨질 수 있다. 명시적으로 UTF-8 로케일을 강제해 이 문제를 예방한다.
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run tests
+        run: ./gradlew test
