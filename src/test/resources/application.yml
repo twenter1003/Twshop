@@ -1,10 +1,14 @@
+# CI 기본 test 태스크를 MySQL 기준으로 전환하기로 결정 (2026-09-15, docs/decisions.md 참고).
+# H2(MODE=MySQL)는 겉보기엔 비슷해도 FOR UPDATE 락 대기, InnoDB 갭 락 같은 동시성 동작이
+# 실제 MySQL과 다를 수 있어, 락 전략을 검증하는 테스트(PurchaseServiceConcurrencyTest 등)의
+# 신뢰도가 떨어진다고 판단했다. 프로덕션 datasource와 같은 환경변수 패턴을 쓰되 로컬 기본값만
+# 다르게 둬서, 로컬에 MySQL이 떠 있으면 별다른 설정 없이 바로 테스트가 돌아가게 했다.
 spring:
   datasource:
-    url: jdbc:h2:mem:twshop;MODE=MySQL
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:twshop}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: ${DB_USERNAME:twshop}
+    password: ${DB_PASSWORD:twshop}
   jpa:
     hibernate:
-      ddl-auto: create-drop
+      ddl-auto: validate
     open-in-view: false
