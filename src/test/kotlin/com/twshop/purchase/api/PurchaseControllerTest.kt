@@ -2,6 +2,7 @@ package com.twshop.purchase.api
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.twshop.product.application.ProductService
+import com.twshop.purchase.application.PurchaseService
 import org.hamcrest.Matchers.notNullValue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -22,6 +23,7 @@ class PurchaseControllerTest @Autowired constructor(
     private val mockMvc: MockMvc,
     private val objectMapper: ObjectMapper,
     private val productService: ProductService,
+    private val purchaseService: PurchaseService,
 ) {
 
     @Test
@@ -49,5 +51,25 @@ class PurchaseControllerTest @Autowired constructor(
                 .content(objectMapper.writeValueAsString(request)),
         )
             .andExpect(status().isNotFound)
+    }
+
+    @Test
+    fun `RESERVED 상태의 시도를 확정하면 200과 함께 CONFIRMED 상태를 반환한다`() {
+        val product = productService.createProduct("API 확정 테스트", null, BigDecimal.TEN, 1)
+        val attempt = purchaseService.reserve(product.id!!, "buyer-1")
+
+        mockMvc.perform(post("/api/purchase-attempts/${attempt.id}/confirm"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("CONFIRMED"))
+    }
+
+    @Test
+    fun `RESERVED 상태의 시도를 취소하면 200과 함께 CANCELLED 상태를 반환한다`() {
+        val product = productService.createProduct("API 취소 테스트", null, BigDecimal.TEN, 1)
+        val attempt = purchaseService.reserve(product.id!!, "buyer-1")
+
+        mockMvc.perform(post("/api/purchase-attempts/${attempt.id}/cancel"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
     }
 }

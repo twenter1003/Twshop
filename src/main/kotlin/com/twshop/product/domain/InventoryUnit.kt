@@ -11,6 +11,7 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
+import jakarta.persistence.Version
 
 /**
  * 한 상품 안에서 개별적으로 추적되는 판매 단위 하나.
@@ -44,6 +45,14 @@ class InventoryUnit(
     @Column(nullable = false, length = 20)
     var status: InventoryStatus = InventoryStatus.AVAILABLE
         private set
+
+    // confirm()/cancel() 동시 호출 경합을 감지하기 위한 낙관적 락 (2026-09-15 결정,
+    // docs/decisions.md 참고). reserve()가 쓰는 비관적 락(findAvailableForUpdate)과는
+    // 별개 메커니즘 — reserve는 여러 buyer가 같은 재고를 다투는 hot-row 경합이라 비관적
+    // 락을 유지하고, confirm/cancel은 이미 특정 buyer가 선점한 유닛 하나를 다루는 드문
+    // 충돌 감지가 목적이라 낙관적 락으로 충분하다고 판단했다.
+    @Version
+    val version: Long = 0
 
     /** 가용 → 선점. 주문 시도가 재고를 임시로 붙잡을 때 호출한다. */
     fun reserve() = transitionTo(InventoryStatus.RESERVED)
