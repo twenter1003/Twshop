@@ -19,6 +19,10 @@ jobs:
           MYSQL_USER: twshop
           MYSQL_PASSWORD: twshop
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          # PurchaseServiceGapLockConcurrencyTest가 root로 twshop 계정에 PROCESS/performance_schema
+          # 조회 권한을 부여해야 한다(아래 스텝 참고). 기본 mysql 이미지는 root@localhost만 만들어서
+          # 컨테이너 밖(러너)에서 TCP로 접속할 수 없으므로, root@%도 만들어지도록 지정한다.
+          MYSQL_ROOT_HOST: "%"
         ports:
           - 3306:3306
         # 애플리케이션 컨테이너보다 MySQL이 늦게 준비되는 경우가 흔해서, 포트가 열렸는지가
@@ -52,6 +56,19 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      # PurchaseServiceGapLockConcurrencyTest(2026-09-15 ADR "MySQL 고유 락(gap lock) 겨냥 신규
+      # 동시성 테스트")가 gap lock 증거를 performance_schema.data_locks/information_schema.innodb_trx
+      # 스냅샷으로 확인한다. twshop 계정은 기본적으로 이 테이블들을 조회할 권한이 없어(로컬에서
+      # Access denied로 직접 확인) 여기서 미리 부여해둔다. 스키마가 아니라 계정 권한이라 Flyway
+      # 마이그레이션 대상이 아니다 — 테스트 클래스 KDoc에도 동일하게 남겨뒀다.
+      - name: Grant twshop account MySQL introspection privileges (gap lock test)
+        run: |
+          mysql -h127.0.0.1 -uroot -e "
+            GRANT PROCESS ON *.* TO 'twshop'@'%';
+            GRANT SELECT ON performance_schema.* TO 'twshop'@'%';
+            FLUSH PRIVILEGES;
+          "
 
       - name: Run tests
         run: ./gradlew test

@@ -154,3 +154,49 @@
   생기면 ENUM이나 `CHECK` 제약 같은 DB 레벨 방어를 다시 검토한다.
 - 구현 메모: 이번 세션에서는 기록만 하고 실제 마이그레이션(V2, `MODIFY COLUMN ... VARCHAR(20)`)은
   적용하지 않았다 — 원칙 2(범위 과다 금지)에 따라 다음 세션에서 별도 작업 단위로 진행한다.
+- 적용 완료(2026-09-15): `V2__status_columns_to_varchar.sql`로 `inventory_unit.status`,
+  `purchase_attempt.status`를 `VARCHAR(20) NOT NULL`로 전환. 값 자체(문자열)는 바뀌지 않아
+  데이터 마이그레이션은 불필요했다. Kotlin 엔티티는 이미 `@Enumerated(EnumType.STRING)` +
+  `length = 20`으로 선언돼 있어 코드 변경 없이 스키마만 바꾸면 됐다. 로컬에 MySQL 8을 직접
+  설치해 실제 구동 위에서 검증했고(`flyway_schema_history`에 V2 적용 확인, `SHOW COLUMNS`로
+  `varchar(20)` 확인), 기존 39개 테스트 전부 통과(실패/에러 0건).
+
+## [2026-09-15] MySQL 고유 락(gap lock) 겨냥 신규 동시성 테스트 — 시나리오/방법론
+- 후보(시나리오): A1. 같은 product_id 내 서로 다른 AVAILABLE 유닛 동시 reserve, A2. status가
+  섞여 있을 때(AVAILABLE 1개 + 다른 상태 다수) non-AVAILABLE row까지 잠기는가, A3. 서로 다른
+  product_id의 reserve끼리 블로킹되는가, A4. reserve 트랜잭션이 열려있는 동안 같은
+  product_id로 신규 InventoryUnit INSERT(재입고)가 블로킹되는가
+- 후보(방법론): B1. 기존 `PurchaseServiceConcurrencyTest`와 동일한 래치/타이밍 패턴, B2.
+  `performance_schema.data_locks` / `information_schema.innodb_trx` 직접 조회, B3. 하이브리드
+  (래치로 블로킹 신호를 먼저 확인하고 그 순간 data_locks/innodb_trx를 1회 스냅샷 조회)
+- 선택: A4 + B3
+- 이유: A1은 `findAvailableForUpdate`가 `ORDER BY id ASC LIMIT 1`이라 실제로는 항상 같은
+  row를 다퉈 신규성이 낮고 기존 `PurchaseServiceConcurrencyTest`가 사실상 이미 커버한다.
+  A4는 gap lock을 가장 교과서적으로 시연하고("재고 없음" 판정과 재입고가 겹치는 실제 운영
+  시나리오이기도 함), `inventory_unit.status`에 인덱스가 없어 `product_id` 인덱스로 스캔 후
+  status로 필터링하는 현재 쿼리 구조의 락 범위를 직접 드러낸다. 방법론은 B1 단독으로는
+  "막혔다"만 보여줄 뿐 gap lock임을 증명하지 못하고, B2 단독은 raw JDBC 별도 커넥션이
+  필요해 스코프 대비 구현 비용이 크다. B3(하이브리드)가 증명력과 구현 비용의 절충점이라고
+  판단했다.
+- 감수한 단점: A2(non-AVAILABLE row까지 잠기는지 — status 미인덱스 설계의 대가를 더 직접
+  드러내는 시나리오)와 A3는 이번 세션에서 다루지 않는다(원칙 2, 세 번째 세션째 미뤄진 세
+  항목 중 이번엔 이 하나만 착수하기로 사용자가 결정). B3는 B2 단독 대비 완전한 성공을
+  보장하지 않는다 — 스냅샷 조회 시점이 늦으면 락이 이미 해제됐을 수 있어 최소한의
+  재시도/폴링이 필요하고, B1보다는 flaky 위험이 높다.
+- 재검토 조건: A2가 필요해지면 이 ADR과 같은 절차로 별도 세션에서 재검토한다. B3가 실제
+  구현/CI에서 반복적으로 flaky하면 B1(신호만)로 축소하거나 B2(스냅샷 중심)로 강화하는 것을
+  재검토한다.
+- 구현 메모(2026-09-15): `PurchaseServiceGapLockConcurrencyTest`로 구현하는 과정에서 A4의
+  전제 조건을 실측으로 정정했다. 처음 예상과 달리, AVAILABLE 유닛이 1개 남아 있는 상태에서는
+  재입고 INSERT가 블로킹되지 않았다(`ORDER BY id ASC LIMIT 1`이 조건을 만족하는 첫 행에서
+  스캔을 멈추므로, next-key lock이 그 행 이전 갭만 잠그고 이후 구간은 잠그지 않음). AVAILABLE
+  유닛이 0개(재고 소진)일 때만 "조건을 만족하는 행 없음"을 확정하려고 구간 끝(supremum)까지
+  스캔하며 gap lock이 걸려 재입고 INSERT가 블로킹됨을 직접 확인했다(`LOCK_MODE =
+  X,INSERT_INTENTION`/`WAITING`, `LOCK_DATA = supremum pseudo-record`). 그래서 최종 테스트는
+  "재고 1개를 만들고 즉시 선점해 소진시킨 뒤" 재입고를 시도하는 구조다 — A4가 가리키던 "재고
+  없음 판정과 재입고가 겹치는 실제 운영 시나리오"와 정확히 일치하는 케이스라 시나리오 선택
+  자체는 바뀌지 않았고, 어떤 재고 상태에서 시연되는지만 실측으로 구체화됐다. 상세 근거는
+  테스트 클래스 KDoc 참고. 로컬 MySQL 8.0.46에서 신규 테스트 6회 연속 통과, 전체 40개(기존
+  39 + 신규 1) 테스트 통과 확인. CI(`twshop` 계정)에는 이 테스트가 필요로 하는
+  `PROCESS`/`performance_schema` 조회 권한이 기본적으로 없어 `.github/workflows/ci.yml`에
+  root로 부여하는 스텝을 추가했다(스키마가 아니라 계정 권한이라 Flyway 대상 아님).
