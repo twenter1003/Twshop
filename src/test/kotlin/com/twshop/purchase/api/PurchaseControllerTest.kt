@@ -72,4 +72,36 @@ class PurchaseControllerTest @Autowired constructor(
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.status").value("CANCELLED"))
     }
+
+    @Test
+    fun `존재하지 않는 시도를 확정하려 하면 404를 반환한다`() {
+        mockMvc.perform(post("/api/purchase-attempts/-1/confirm"))
+            .andExpect(status().isNotFound)
+    }
+
+    @Test
+    fun `존재하지 않는 시도를 취소하려 하면 404를 반환한다`() {
+        mockMvc.perform(post("/api/purchase-attempts/-1/cancel"))
+            .andExpect(status().isNotFound)
+    }
+
+    @Test
+    fun `RESERVED가 아닌 시도를 확정하려 하면 400을 반환한다`() {
+        val product = productService.createProduct("API 중복 확정 테스트", null, BigDecimal.TEN, 1)
+        val attempt = purchaseService.reserve(product.id!!, "buyer-1")
+        purchaseService.confirm(attempt.id!!)
+
+        mockMvc.perform(post("/api/purchase-attempts/${attempt.id}/confirm"))
+            .andExpect(status().isBadRequest)
+    }
+
+    @Test
+    fun `RESERVED가 아닌 시도를 취소하려 하면 400을 반환한다`() {
+        val product = productService.createProduct("API 중복 취소 테스트", null, BigDecimal.TEN, 1)
+        val attempt = purchaseService.reserve(product.id!!, "buyer-1")
+        purchaseService.cancel(attempt.id!!)
+
+        mockMvc.perform(post("/api/purchase-attempts/${attempt.id}/cancel"))
+            .andExpect(status().isBadRequest)
+    }
 }
