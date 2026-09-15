@@ -135,3 +135,22 @@
   감수하고 B를 선택한 것은 사용자의 명시적 판단이다.
 - 재검토 조건: 마이그레이션 스크립트 관리 부담이 엔티티 변경 빈도 대비 지나치게 커지면
   A(Hibernate 자동 생성)로 축소 검토.
+
+## [2026-09-15] status 컬럼(InventoryUnit.status, PurchaseAttempt.status) 타입
+- 후보: A. MySQL 네이티브 ENUM 유지(현재 `V1__baseline_schema.sql`이 채택한 형태, Hibernate가
+  `@Enumerated(EnumType.STRING)`을 자동으로 이렇게 매핑함), B. `VARCHAR(20)` + Kotlin enum(검증
+  책임을 애플리케이션 레벨로 위임)
+- 선택: B. VARCHAR
+- 이유: 이 프로젝트는 단일 애플리케이션만 이 DB에 쓰는 구조라, ENUM이 주는 DB 레벨 방어(다른
+  소비자가 잘못된 문자열을 못 넣게 막는 것)의 실익이 낮다. 반대로 ENUM은 상태값을 추가할
+  때마다 코드(Kotlin enum)와 DB(`ALTER TABLE ... MODIFY COLUMN`)를 이중으로 관리해야 하는데,
+  이 동기화가 깨져도 `ddl-auto: validate`가 잡아주지 못한다는 걸 QA가 직접 실험으로 확인했다
+  (ENUM 목록에서 값을 하나 빼도 39개 테스트 전부 통과 — 위 "MySQL 테스트 프로필의 스키마
+  초기화 방식" 회귀 점검 참고). VARCHAR로 바꾸면 상태값 추가 시 스키마 변경 자체가
+  필요없어져서 이 리스크가 구조적으로 사라진다.
+- 감수한 단점: DB 레벨에서 잘못된 문자열이 저장되는 걸 막아주는 안전장치가 없어진다 — 검증
+  책임이 전부 애플리케이션(`@Enumerated(EnumType.STRING)`)으로 넘어간다.
+- 재검토 조건: 이 DB에 이 애플리케이션 외의 다른 쓰기 주체(별도 배치, 분리된 서비스 등)가
+  생기면 ENUM이나 `CHECK` 제약 같은 DB 레벨 방어를 다시 검토한다.
+- 구현 메모: 이번 세션에서는 기록만 하고 실제 마이그레이션(V2, `MODIFY COLUMN ... VARCHAR(20)`)은
+  적용하지 않았다 — 원칙 2(범위 과다 금지)에 따라 다음 세션에서 별도 작업 단위로 진행한다.
