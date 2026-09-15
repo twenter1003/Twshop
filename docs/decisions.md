@@ -154,3 +154,9 @@
   생기면 ENUM이나 `CHECK` 제약 같은 DB 레벨 방어를 다시 검토한다.
 - 구현 메모: 이번 세션에서는 기록만 하고 실제 마이그레이션(V2, `MODIFY COLUMN ... VARCHAR(20)`)은
   적용하지 않았다 — 원칙 2(범위 과다 금지)에 따라 다음 세션에서 별도 작업 단위로 진행한다.
+- 적용 완료(2026-09-15): `V2__status_columns_to_varchar.sql`로 `inventory_unit.status`,
+  `purchase_attempt.status`를 `VARCHAR(20) NOT NULL`로 전환. 값 자체(문자열)는 바뀌지 않아
+  데이터 마이그레이션은 불필요했다. Kotlin 엔티티는 이미 `@Enumerated(EnumType.STRING)` +
+  `length = 20`으로 선언돼 있어 코드 변경 없이 스키마만 바꾸면 됐다. 로컬에 MySQL 8을 직접
+  설치해 실제 구동 위에서 검증했고(`flyway_schema_history`에 V2 적용 확인, `SHOW COLUMNS`로
+  `varchar(20)` 확인), 기존 39개 테스트 전부 통과(실패/에러 0건).
