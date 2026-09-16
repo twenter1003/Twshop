@@ -67,6 +67,16 @@ import kotlin.test.assertTrue
  * 아니다. 이 테스트만을 위해 프로덕션 리포지토리에 새 메서드를 추가하는 건 스코프
  * 과다(CLAUDE.md 원칙 2)라, `EntityManager.find(id, PESSIMISTIC_WRITE)`로 "이 row를
  * `SELECT ... FOR UPDATE`로 잠근다"는 동일한 의도를 프로덕션 코드 변경 없이 재현한다.
+ *
+ * ## A3: 서로 다른 상품끼리는 블로킹되지 않는가 (negative case)
+ * `findAvailableForUpdate`의 WHERE 절은 `product_id`(인덱스 있음) 등호 조건 + `status`(인덱스
+ * 없음) 필터다. A2에서 확인한 "조건에 안 맞는 row도 잠근다"는 동작이 같은 `product_id` *범위
+ * 안에서* 일어나는 것이지, 다른 `product_id`까지 침범하는 건 아닐 것이라는 게 기대였다. 로컬
+ * MySQL 두 세션으로 인접한 id를 가진 서로 다른 상품 A/B를 만들어 확인한 결과, 기대대로
+ * A의 스캔이 열려 있는 동안 B의 스캔은 전혀 블로킹되지 않았다 — 두 트랜잭션 모두
+ * `RUNNING`(대기 없음) 상태로 각자의 row에 `GRANTED` 레코드 락만 들고 있었다. A2와 달리
+ * "막힌다"가 아니라 "안 막힌다"를 증명하는 시나리오라, 스냅샷도 "두 락이 동시에 GRANTED
+ * 상태로 공존하고 WAITING이 하나도 없다"는 것 자체가 증거다.
  */
 @SpringBootTest
 class InventoryUnitRepositoryLockScopeTest @Autowired constructor(
@@ -161,6 +171,122 @@ class InventoryUnitRepositoryLockScopeTest @Autowired constructor(
             snapshot.hasLockWaitTrxForSelect,
             "innodb_trx에서 해당 SELECT ... FOR UPDATE가 LOCK WAIT 상태라는 증거를 찾지 못함: $snapshot",
         )
+    }
+
+    @Test
+    fun `서로 다른 상품의 findAvailableForUpdate 스캔은 서로 블로킹되지 않는다`() {
+        val productA = productService.createProduct("lock 범위 테스트 상품 A", null, BigDecimal.TEN, 1)
+        val productB = productService.createProduct("lock 범위 테스트 상품 B", null, BigDecimal.TEN, 1)
+
+        val executor = Executors.newFixedThreadPool(2)
+        val scannedALatch = CountDownLatch(1)
+        val scannedBLatch = CountDownLatch(1)
+        val okToCommitLatch = CountDownLatch(1) // 메인 스레드: 두 락 동시 보유 확인 후 둘 다에게 커밋 허가
+        val errors = ConcurrentLinkedQueue<Throwable>()
+        val unitAId = AtomicLong(-1)
+        val unitBId = AtomicLong(-1)
+
+        fun holdScan(productId: Long, scannedLatch: CountDownLatch, unitIdHolder: AtomicLong) {
+            try {
+                val status = transactionManager.getTransaction(DefaultTransactionDefinition())
+                val found = inventoryUnitRepository.findAvailableForUpdate(productId, PageRequest.of(0, 1))
+                check(found.size == 1) { "AVAILABLE 유닛이 정확히 1개 있어야 시나리오 전제가 성립한다: $found" }
+                unitIdHolder.set(found.first().id!!)
+                scannedLatch.countDown()
+                okToCommitLatch.await(10, TimeUnit.SECONDS)
+                transactionManager.commit(status)
+            } catch (ex: Throwable) {
+                errors.add(ex)
+                scannedLatch.countDown()
+            }
+        }
+
+        executor.submit { holdScan(productA.id!!, scannedALatch, unitAId) }
+        // 상품A의 스캔이 열려 있는 동안 곧바로 상품B의 스캔을 시도한다 — 블로킹된다면 이
+        // await 자체가 시간 안에 끝나지 않는다.
+        scannedALatch.await(10, TimeUnit.SECONDS)
+        val productBScanStartedAtNanos = System.nanoTime()
+        executor.submit { holdScan(productB.id!!, scannedBLatch, unitBId) }
+        val productBScanned = scannedBLatch.await(2, TimeUnit.SECONDS)
+        val productBScanElapsedMillis = (System.nanoTime() - productBScanStartedAtNanos) / 1_000_000
+
+        // 1) negative case의 핵심 assertion — 상품A 스캔이 열려 있는데도 상품B 스캔이
+        //    블로킹 없이(2초 이내) 끝났다.
+        assertTrue(productBScanned, "상품A의 스캔이 열려 있는 동안 상품B의 스캔이 블로킹됐다 — 서로 다른 상품끼리도 잠긴다는 뜻")
+
+        // 2) 두 락이 동시에 GRANTED 상태로 공존하는 그 순간을 스냅샷으로 남긴다 — "안 막힌다"는
+        //    걸 타이밍만으로 주장하지 않고, 실제로 서로 다른 트랜잭션이 각자 락을 쥔 채 대기
+        //    없이 공존한다는 걸 직접 확인한다.
+        val snapshot = queryIndependentGrantSnapshot(unitAId.get(), unitBId.get())
+
+        okToCommitLatch.countDown()
+        executor.shutdown()
+        executor.awaitTermination(10, TimeUnit.SECONDS)
+
+        assertTrue(errors.isEmpty(), "스레드에서 예상치 못한 예외 발생: $errors")
+        assertTrue(
+            productBScanElapsedMillis < 2000,
+            "상품B 스캔이 예상보다 오래 걸렸다(${productBScanElapsedMillis}ms) — 블로킹 의심",
+        )
+        assertTrue(
+            snapshot.bothGrantedIndependently,
+            "두 상품의 락이 동시에 GRANTED 상태로 공존한다는 증거를 찾지 못함: $snapshot",
+        )
+        assertTrue(
+            snapshot.noWaitingLocks,
+            "다른 상품 스캔인데도 WAITING 락이 관측됨 — 서로 블로킹됐다는 뜻: $snapshot",
+        )
+    }
+
+    /** [queryIndependentGrantSnapshot]의 조회 결과. */
+    private data class IndependentGrantSnapshot(
+        val dataLocksRows: List<String>,
+        val bothGrantedIndependently: Boolean,
+        val noWaitingLocks: Boolean,
+    )
+
+    /**
+     * `unitAId`, `unitBId` 각각에 대한 클러스터드 인덱스 레코드 락이 서로 다른 트랜잭션에서
+     * `GRANTED` 상태로 동시에 존재하고, `inventory_unit`에 대한 `WAITING` 락은 하나도 없다는
+     * 걸 raw JDBC로 1회 확인한다. A2 테스트의 [querySnapshot]과 달리 여기선 대기를 기다릴
+     * 필요가 없다 — 두 스레드 모두 커밋을 보류한 채 호출자가 명시적으로 동시 보유를 확인한
+     * 뒤에야 커밋을 허가하므로, 재시도 없이 1회 조회로 충분하다.
+     */
+    private fun queryIndependentGrantSnapshot(unitAId: Long, unitBId: Long): IndependentGrantSnapshot {
+        dataSource.connection.use { conn ->
+            val rows = mutableListOf<String>()
+            var grantedTrxForA: Long? = null
+            var grantedTrxForB: Long? = null
+            var hasWaiting = false
+            conn.createStatement().use { stmt ->
+                stmt.executeQuery(
+                    """
+                    SELECT ENGINE_TRANSACTION_ID, LOCK_TYPE, LOCK_MODE, LOCK_STATUS, LOCK_DATA
+                    FROM performance_schema.data_locks
+                    WHERE OBJECT_NAME = 'inventory_unit'
+                    """.trimIndent(),
+                ).use { rs ->
+                    while (rs.next()) {
+                        val trxId = rs.getLong("ENGINE_TRANSACTION_ID")
+                        val lockType = rs.getString("LOCK_TYPE")
+                        val lockMode = rs.getString("LOCK_MODE")
+                        val lockStatus = rs.getString("LOCK_STATUS")
+                        val lockData = rs.getString("LOCK_DATA")
+                        rows.add("trx=$trxId $lockType/$lockMode/$lockStatus/$lockData")
+                        if (lockStatus == "WAITING") hasWaiting = true
+                        if (lockType == "RECORD" && lockMode.contains("REC_NOT_GAP") && lockStatus == "GRANTED") {
+                            when (lockData) {
+                                unitAId.toString() -> grantedTrxForA = trxId
+                                unitBId.toString() -> grantedTrxForB = trxId
+                            }
+                        }
+                    }
+                }
+            }
+
+            val bothGrantedIndependently = grantedTrxForA != null && grantedTrxForB != null && grantedTrxForA != grantedTrxForB
+            return IndependentGrantSnapshot(rows, bothGrantedIndependently, !hasWaiting)
+        }
     }
 
     /** [querySnapshot]의 조회 결과. 실패 시 assertion 메시지에 그대로 찍혀 디버깅에 쓰인다. */
