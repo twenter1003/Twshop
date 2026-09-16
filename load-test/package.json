@@ -1,0 +1,12 @@
+{
+  "name": "twshop-load-test",
+  "private": true,
+  "version": "1.0.0",
+  "description": "POST /api/purchase-attempts에 대한 autocannon 기반 실HTTP 부하테스트 (2026-09-16 ADR, docs/decisions.md 참고). Gradle 루트와 의존성이 섞이지 않도록 별도 Node 프로젝트로 분리했다.",
+  "scripts": {
+    "bench": "node reserve-benchmark.js"
+  },
+  "devDependencies": {
+    "autocannon": "8.0.0"
+  }
+}

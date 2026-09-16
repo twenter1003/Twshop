@@ -32,3 +32,6 @@ out/
 
 ### macOS ###
 .DS_Store
+
+### load-test (Node, autocannon 부하테스트) ###
+load-test/node_modules/

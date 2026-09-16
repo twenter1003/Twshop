@@ -37,6 +37,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * `@Tag("benchmark")`로 기본 `./gradlew test`에서 제외된다(build.gradle.kts 참고) — 타이밍에
  * 의존하는 시연이라 CI에서 반복 안정성을 보장하지 않기 때문이다.
  * 수동 실행: `./gradlew benchmarkTest`
+ *
+ * HTTP 스택 전체 처리량은 `load-test/`의 autocannon 벤치마크(`docs/benchmarks/2026-09-16-autocannon-reserve-http.md`) 참고.
  */
 @SpringBootTest
 @Tag("benchmark")
