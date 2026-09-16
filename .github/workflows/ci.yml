@@ -33,6 +33,18 @@ jobs:
           --health-timeout=5s
           --health-retries=20
 
+      # Waiting 모듈의 대기열 저장소 (2026-09-16 "Waiting 모듈 대기열 설계" ADR 참고). 로컬
+      # docker-compose.yml의 redis 서비스와 동일한 이미지/포트를 맞췄다.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
     env:
       DB_HOST: 127.0.0.1
       DB_PORT: 3306
