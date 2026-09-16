@@ -282,6 +282,108 @@ class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
         )
     }
 
+    @Test
+    fun `서로 다른 product_id의 reserve끼리는 서로를 기다리지 않는다`() {
+        // A1/A2/A4는 전부 "블로킹된다"를 증명하는 시나리오였다. A3는 방향이 반대다 —
+        // findAvailableForUpdate가 product_id로 스캔 범위를 좁히는 쿼리이므로(InventoryUnitRepository
+        // 참고), 서로 다른 product_id를 대상으로 하는 두 FOR UPDATE는 완전히 다른 인덱스 구간을
+        // examine해야 하고, 그렇다면 서로의 락 범위와 겹치지 않아야 한다. 이걸 증명하지 못하면
+        // "product_id 경계를 넘어서는 과도한 락"이라는 우려가 남는다 (2026-09-15 ADR 참고).
+        //
+        // "블로킹 안 됨"은 "블로킹됨"과 증명 구조가 다르다: A2/A4처럼 "커밋 이후에야 끝났다"를
+        // 기다리는 게 아니라, X를 일부러 오래(수 초) 열어 둔 채로 Y가 그보다 훨씬 먼저 끝나
+        // 있어야 한다는 인과관계를 보여줘야 한다. 그래서 이 테스트만의 전용 검증 구조를 쓴다 —
+        // 기존 LockSnapshot/pollForLockSnapshot은 "대기 중인 락의 증거"를 찾는 도구라 여기서는
+        // 맞지 않는다(애초에 대기 중인 락이 없어야 하는 시나리오이므로).
+        val productX = productService.createProduct("gap lock A3 상품 X", null, BigDecimal.TEN, 1)
+        val productY = productService.createProduct("gap lock A3 상품 Y", null, BigDecimal.TEN, 1)
+
+        val executor = Executors.newFixedThreadPool(2)
+        val lockedXLatch = CountDownLatch(1) // 스레드1: X의 유닛을 잠근 뒤 커밋 보류 상태로 진입
+        val releaseXLatch = CountDownLatch(1) // 메인 스레드: 검증을 마친 뒤에만 스레드1의 커밋을 허가
+        val xDoneLatch = CountDownLatch(1) // 스레드1: 커밋(또는 예외 처리)까지 완전히 끝남
+        val foundYLatch = CountDownLatch(1) // 스레드2: Y 조회가 리턴함
+        val errors = ConcurrentLinkedQueue<Throwable>()
+
+        val commitInitiatedAtNanos = AtomicLong(-1)
+        val foundYAtNanos = AtomicLong(-1)
+        var foundY: List<InventoryUnit> = emptyList()
+
+        executor.submit {
+            try {
+                val status = transactionManager.getTransaction(DefaultTransactionDefinition())
+                val found = inventoryUnitRepository.findAvailableForUpdate(productX.id!!, PageRequest.of(0, 1))
+                check(found.size == 1) { "X의 AVAILABLE 유닛이 정확히 1개여야 시나리오 전제가 맞다: $found" }
+                lockedXLatch.countDown()
+                releaseXLatch.await(10, TimeUnit.SECONDS)
+                commitInitiatedAtNanos.set(System.nanoTime())
+                transactionManager.commit(status)
+            } catch (ex: Throwable) {
+                errors.add(ex)
+                lockedXLatch.countDown()
+            } finally {
+                xDoneLatch.countDown()
+            }
+        }
+        lockedXLatch.await(10, TimeUnit.SECONDS)
+
+        executor.submit {
+            try {
+                val status = transactionManager.getTransaction(DefaultTransactionDefinition())
+                foundY = inventoryUnitRepository.findAvailableForUpdate(productY.id!!, PageRequest.of(0, 1))
+                foundYAtNanos.set(System.nanoTime())
+                transactionManager.commit(status)
+            } catch (ex: Throwable) {
+                errors.add(ex)
+            } finally {
+                foundYLatch.countDown()
+            }
+        }
+
+        // 1) 진단용 하한 체크: Y 조회가 "말도 안 되게 오래 걸리지는" 않았는지만 확인한다.
+        //    실제 증명은 이 체크가 아니라 아래 2)/4)의 결정론적 assertion들이 담당한다 — 2)는
+        //    releaseXLatch를 메인 스레드가 쥐고 있어 X가 이 시점까지 커밋을 시도할 수 없다는 게
+        //    코드 구조상 100% 보장되고, 4)는 X를 몇 초간 강제로 붙잡아 둔 뒤 시각을 비교하는
+        //    부등식이라 둘 다 타이밍에 좌우되지 않는다.
+        //    그래서 여기 타임아웃은 "타이트하게 좁혀서 증거로 쓰는" 값이 아니라 "이 정도면 뭔가
+        //    잘못됐다"를 판단하는 널널한 하한선이면 충분하다. 500ms처럼 타이트한 값은 CI의
+        //    GC 일시정지·커넥션 풀 경합 같은 정상적인 지연에도 우연히 넘겨 false failure를 낼
+        //    수 있어 X를 붙잡는 시간(2초)보다 충분히 긴 10초로 잡는다 — 이 파일의 다른 래치들과
+        //    같은 타임아웃이라 값 자체에 특별한 의미를 부여하지 않는다.
+        //    타임아웃을 늘려도 회귀 탐지력이 줄지 않는다는 것도 이 코드가 스스로 보여준다: 만약
+        //    누군가 실수로 product_id 필터를 없애 진짜 블로킹이 재발하면, Y는 X가 커밋할
+        //    때(2초 후)까지 기다렸다가 끝나므로 이 await는 여전히 true를 반환하지만, 그 시점에는
+        //    이미 commitInitiatedAtNanos가 -1이 아니게 되어 있어 바로 아래 2)의 assertEquals가
+        //    실패로 잡아낸다.
+        val finishedWithinGenerousBound = foundYLatch.await(10, TimeUnit.SECONDS)
+        assertTrue(finishedWithinGenerousBound, "Y 조회가 10초 안에도 끝나지 않음 — 데드락 등 별도 문제 가능성")
+
+        // 2) 이 시점에 X는 아직 커밋을 "시도조차" 하지 않았다는 걸 상태로 확정한다. 시간 기반
+        //    추정이 아니라, releaseXLatch를 메인 스레드가 직접 쥐고 있어서 X가 커밋을 시도할 수
+        //    없는 구간이라는 게 보장되므로 이 체크는 레이스 컨디션이 없다.
+        assertEquals(-1L, commitInitiatedAtNanos.get(), "X가 아직 커밋을 시도하지 않았어야 하는데 이미 진행됨 — 테스트 전제가 깨짐")
+
+        // 3) X를 몇 초 더 붙잡아 둔다 — Y가 "우연히 X보다 빨랐다"가 아니라 "X가 한참 동안 열려
+        //    있어도 아무 영향이 없었다"는 걸 더 분명히 보여주기 위한 여유 구간이다.
+        Thread.sleep(2000)
+        releaseXLatch.countDown()
+        assertTrue(xDoneLatch.await(10, TimeUnit.SECONDS), "X 트랜잭션이 커밋 허가 이후에도 끝나지 않음")
+        executor.shutdown()
+
+        assertTrue(errors.isEmpty(), "스레드에서 예상치 못한 예외 발생: $errors")
+
+        // 4) 인과관계 검증: Y의 조회 완료 시각이 X의 커밋 시도 시각보다 반드시 (등호 없이) 앞서야
+        //    한다. A2/A4의 `>=`(커밋 이후에야 끝남)와 정반대 방향의 부등식이다.
+        assertTrue(
+            foundYAtNanos.get() < commitInitiatedAtNanos.get(),
+            "Y 조회가 X의 커밋 시도 이후에 끝난 것으로 관측됨 — 블로킹됐을 가능성",
+        )
+
+        // 5) "안 막혔다"뿐 아니라 Y가 자기 작업(Y 소속 유닛 잠금)을 실제로 정상 완료했는지도 확인한다.
+        assertEquals(1, foundY.size, "Y의 AVAILABLE 유닛을 찾지 못함")
+        assertEquals(productY.id, foundY.single().product.id, "잠긴 유닛이 Y 소속이 아님")
+    }
+
     /**
      * [pollForLockSnapshot]/[queryLockSnapshot]의 조회 결과. 실패 시 assertion 메시지에 그대로
      * 찍혀 디버깅에 쓰인다.
