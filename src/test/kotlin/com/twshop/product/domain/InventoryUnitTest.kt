@@ -1,10 +1,18 @@
 package com.twshop.product.domain
 
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.math.BigDecimal
 import kotlin.test.assertEquals
 
+/**
+ * `InventoryUnit`의 상태 전이 규칙을 검증하는 순수 단위 테스트.
+ *
+ * Spring 컨텍스트나 DB 없이 도메인 객체만으로 검증 가능해 `unit` 계층으로 분류한다
+ * (2026-09-16 "테스트 피라미드 공식화 범위" ADR, `docs/testing-strategy.md` 참고).
+ */
+@Tag("unit")
 class InventoryUnitTest {
 
     private fun newUnit(): InventoryUnit {

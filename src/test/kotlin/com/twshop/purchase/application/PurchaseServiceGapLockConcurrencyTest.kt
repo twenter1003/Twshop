@@ -4,6 +4,7 @@ import com.twshop.product.application.ProductService
 import com.twshop.product.domain.InventoryUnit
 import com.twshop.product.infrastructure.InventoryUnitRepository
 import com.twshop.purchase.domain.PurchaseAttemptStatus
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -65,7 +66,11 @@ import kotlin.test.assertTrue
  * GRANT SELECT ON performance_schema.* TO 'twshop'@'%';
  * ```
  * (로컬호스트 접속만 쓴다면 `'twshop'@'localhost'`에도 동일하게 부여해야 한다.)
+ *
+ * 멀티스레드 + 실 MySQL의 InnoDB 고유 락 동작을 겨냥하므로 `concurrency` 계층으로 분류한다
+ * (2026-09-16 "테스트 피라미드 공식화 범위" ADR, `docs/testing-strategy.md` 참고).
  */
+@Tag("concurrency")
 @SpringBootTest
 class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
     private val purchaseService: PurchaseService,

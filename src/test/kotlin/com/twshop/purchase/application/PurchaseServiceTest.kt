@@ -4,6 +4,7 @@ import com.twshop.product.application.ProductService
 import com.twshop.product.domain.InventoryStatus
 import com.twshop.product.infrastructure.InventoryUnitRepository
 import com.twshop.purchase.domain.PurchaseAttemptStatus
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.springframework.beans.factory.annotation.Autowired
@@ -15,6 +16,13 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 
+/**
+ * `PurchaseService`의 reserve/confirm/cancel 유스케이스를 실 MySQL 위에서 검증하는 통합 테스트.
+ *
+ * 단일 스레드로 서비스 계약을 확인하는 수준이라 `integration` 계층으로 분류한다
+ * (2026-09-16 "테스트 피라미드 공식화 범위" ADR, `docs/testing-strategy.md` 참고).
+ */
+@Tag("integration")
 @SpringBootTest
 @Transactional
 class PurchaseServiceTest @Autowired constructor(

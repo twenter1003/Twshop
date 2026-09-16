@@ -5,6 +5,7 @@ import com.twshop.product.domain.InventoryStatus
 import com.twshop.product.infrastructure.InventoryUnitRepository
 import com.twshop.purchase.domain.PurchaseAttemptStatus
 import com.twshop.purchase.infrastructure.PurchaseAttemptRepository
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -28,7 +29,11 @@ import kotlin.test.assertTrue
  * 위에서 확인했지만(2026-09-15 CI를 MySQL 기준으로 전환, docs/decisions.md 참고), 락
  * 대기시간·데드락 같은 InnoDB 갭 락 고유 동작을 겨냥한 테스트는 아니다. 이 테스트는
  * "중복 선점이 없다"는 애플리케이션 레벨 불변식만 검증한다.
+ *
+ * 멀티스레드로 실 MySQL의 락 경합을 재현하므로 `concurrency` 계층으로 분류한다
+ * (2026-09-16 "테스트 피라미드 공식화 범위" ADR, `docs/testing-strategy.md` 참고).
  */
+@Tag("concurrency")
 @SpringBootTest
 class PurchaseServiceConcurrencyTest @Autowired constructor(
     private val purchaseService: PurchaseService,

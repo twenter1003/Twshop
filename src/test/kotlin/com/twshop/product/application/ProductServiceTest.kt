@@ -2,6 +2,7 @@ package com.twshop.product.application
 
 import com.twshop.product.domain.InventoryStatus
 import com.twshop.product.infrastructure.InventoryUnitRepository
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.springframework.beans.factory.annotation.Autowired
@@ -11,6 +12,13 @@ import java.math.BigDecimal
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
+/**
+ * `ProductService`의 상품 생성 유스케이스를 실 MySQL 위에서 검증하는 통합 테스트.
+ *
+ * 단일 스레드로 서비스/저장소 계약을 확인하는 수준이라 `integration` 계층으로 분류한다
+ * (2026-09-16 "테스트 피라미드 공식화 범위" ADR, `docs/testing-strategy.md` 참고).
+ */
+@Tag("integration")
 @SpringBootTest
 @Transactional
 class ProductServiceTest @Autowired constructor(
