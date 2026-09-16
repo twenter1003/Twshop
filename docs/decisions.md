@@ -200,3 +200,27 @@
   39 + 신규 1) 테스트 통과 확인. CI(`twshop` 계정)에는 이 테스트가 필요로 하는
   `PROCESS`/`performance_schema` 조회 권한이 기본적으로 없어 `.github/workflows/ci.yml`에
   root로 부여하는 스텝을 추가했다(스키마가 아니라 계정 권한이라 Flyway 대상 아님).
+- 구현 메모(2026-09-15, A2): `InventoryUnitRepositoryLockScopeTest`로 구현했다. B3 방법론은
+  A4 때 이미 검증된 것을 그대로 재사용했다 — 시나리오만 다르고 방법론 자체는 새 개념이
+  아니라 별도 `/decide`를 다시 거치지 않았다. 로컬 MySQL 두 세션으로 먼저 실측: 재고 3개 중
+  낮은 id 2개를 선점(RESERVED)시킨 뒤 세 번째(AVAILABLE)를 `ORDER BY id ASC LIMIT 1 FOR
+  UPDATE`로 스캔하면, 조건에 안 맞는 두 RESERVED row에도 일반 레코드 락(`X,REC_NOT_GAP`,
+  gap이 아닌 그 행 자체에 대한 락)이 걸려 다른 세션의 해당 row `SELECT ... FOR UPDATE`가
+  블로킹됨을 확인했다. A4(재고 완전 소진 시에만 발생하는 gap lock)보다 재현 조건이 훨씬
+  느슨하다 — 재고가 하나라도 팔린 적 있는 거의 모든 상품에서 발생하는 흔한 패턴이다. 로컬
+  MySQL 8.0.46에서 신규 테스트 4회 연속 통과, 전체 41개(기존 40 + 신규 1) 테스트 통과 확인.
+  프로덕션 코드는 수정하지 않았다(두 번째 스레드의 락 시도는 `EntityManager.find(id,
+  PESSIMISTIC_WRITE)`로 재현 — 이 테스트만을 위한 리포지토리 메서드 추가는 스코프 과다로
+  판단).
+- 구현 메모(2026-09-16, A3): `InventoryUnitRepositoryLockScopeTest`에 두 번째 `@Test`로
+  추가했다(별도 파일 대신 같은 클래스 — `PurchaseServiceConcurrencyTest`가 이미 여러 개의
+  관련 시나리오를 한 클래스에 묶어두는 것과 같은 관례). A2와 달리 "막힌다"가 아니라 "안
+  막힌다"를 증명하는 negative case라, 인과관계(순서) 증명 대신 두 트랜잭션이 동시에
+  `GRANTED` 상태로 공존하고 `WAITING` 락이 하나도 없다는 걸 스냅샷으로 직접 확인하는
+  방식으로 B3를 변형했다. 로컬 MySQL 두 세션으로 먼저 실측: 인접한 id를 가진 서로 다른
+  상품 A/B 각각의 `FOR UPDATE` 스캔을 동시에 열어봤더니 기대대로 서로 블로킹되지
+  않았다(둘 다 `RUNNING`, 각자의 row에 `GRANTED` 레코드 락만 보유, `WAITING` 없음) — A2가
+  보여준 "조건에 안 맞는 row도 잠근다"는 동작이 `product_id` 범위를 넘어서지는 않음을
+  확인했다. 로컬에서 신규 테스트 5회 연속 통과, 전체 42개(기존 41 + 신규 1) 테스트 통과
+  확인. 프로덕션 코드는 수정하지 않았다.
+- 세 시나리오(A2/A3/A4) 모두 구현 완료로, 이 ADR이 다루는 스코프는 마무리됐다.
