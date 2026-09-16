@@ -1,0 +1,29 @@
+# 로컬 개발/테스트용 MySQL. CI(.github/workflows/ci.yml)의 서비스 컨테이너 설정과
+# 계정/DB 이름을 동일하게 맞춰서, application.yml 기본값(twshop/twshop, localhost:3306)이
+# 별도 설정 없이 그대로 맞게 했다.
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: twshop
+      MYSQL_USER: twshop
+      MYSQL_PASSWORD: twshop
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      # PurchaseServiceGapLockConcurrencyTest가 twshop 계정에 PROCESS/performance_schema 조회
+      # 권한을 부여받으려면 root가 원격 접속(호스트 '%')으로 존재해야 한다 (CI와 동일한 이유).
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3306:3306"
+    volumes:
+      - twshop-mysql-data:/var/lib/mysql
+      # CI의 "Grant twshop account MySQL introspection privileges" 스텝과 동일한 권한을
+      # 컨테이너 최초 초기화 시 자동으로 부여한다.
+      - ./docker/mysql-init/grant-introspection.sql:/docker-entrypoint-initdb.d/grant-introspection.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-utwshop", "-ptwshop"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  twshop-mysql-data:
