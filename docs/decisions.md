@@ -200,3 +200,15 @@
   39 + 신규 1) 테스트 통과 확인. CI(`twshop` 계정)에는 이 테스트가 필요로 하는
   `PROCESS`/`performance_schema` 조회 권한이 기본적으로 없어 `.github/workflows/ci.yml`에
   root로 부여하는 스텝을 추가했다(스키마가 아니라 계정 권한이라 Flyway 대상 아님).
+- 구현 메모(2026-09-16, A2): 같은 클래스에 두 번째 `@Test`로 A2(non-AVAILABLE row 잠금 여부)를
+  추가했다. 유닛 3개(id 오름차순)를 만들고 앞 두 개를 reserve()로 RESERVED로 바꿔 세 번째만
+  AVAILABLE로 남긴 뒤, `findAvailableForUpdate`가 그 세 번째 row를 찾아 잠근 채 커밋을
+  보류하는 동안, 별도 트랜잭션이 raw JDBC로 *첫 번째(non-AVAILABLE, 매칭되지 않은)* row를
+  `UPDATE ... WHERE id = ?`로 직접 건드려봤다. 실제로 블로킹됐고,
+  `performance_schema.data_locks`에서 `LOCK_TYPE=RECORD`, `LOCK_STATUS=WAITING`,
+  `LOCK_DATA=<그 row의 PK>`가 관측됐다 — status가 인덱스에 없어 `product_id` 인덱스로
+  스캔하며 examine한 non-matching row까지 InnoDB가 잠근다는 ADR의 예상을 실측으로 확인했다.
+  A4가 증명한 gap(다음 레코드 없음 구간) lock과 달리, A2는 이미 존재하는 특정 row에 대한
+  일반 record lock이라는 점이 다르다. 로컬 MySQL 8.0에서 신규 테스트 5회 연속 통과, 전체
+  41개(기존 40 + 신규 1) 테스트 통과 확인. A3(서로 다른 product_id 간 비블로킹)는 이번
+  세션에서 다루지 않는다(원칙 2 — 이번 세션 시작 시 A2/A3 중 A2만 진행하기로 결정함).

@@ -147,7 +147,12 @@ class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
         // 2) 블로킹 중인 그 순간, 별도 raw JDBC 커넥션으로 실제 락 상태를 스냅샷 조회한다 (B3 후반부).
         //    ADR에 명시된 대로 완벽한 성공 보장은 없다 — 스냅샷 타이밍이 늦으면 락이 이미
         //    풀렸을 수 있어 최소한의 재시도만 둔다(최대 5회, 100ms 간격 — 과도한 폴링 금지).
-        val snapshot = pollForGapLockSnapshot()
+        val snapshot = pollForLockSnapshot(
+            isMatchingLock = { lockType, lockMode, lockStatus, _ ->
+                lockType == "RECORD" && lockStatus == "WAITING" && lockMode.contains("INSERT_INTENTION")
+            },
+            isMatchingTrxQuery = { it.contains("insert into inventory_unit", ignoreCase = true) },
+        )
 
         okToCommitLatch.countDown()
         val completed = insertDoneLatch.await(10, TimeUnit.SECONDS)
@@ -167,50 +172,174 @@ class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
         //    트랜잭션에 의해 잠겨 있을 때만 발생하므로, 이 락이 WAITING 상태로 관측됐다는 것
         //    자체가 "이 INSERT가 gap lock에 막혔다"는 직접적인 증거다.
         assertTrue(
-            snapshot.hasWaitingInsertIntention,
+            snapshot.hasMatchingWaitingLock,
             "블로킹된 INSERT가 INSERT_INTENTION(gap lock 대기) 락을 걸고 있다는 증거를 찾지 못함: $snapshot",
         )
         assertTrue(
-            snapshot.hasLockWaitTrxForInsert,
+            snapshot.hasMatchingLockWaitTrx,
             "innodb_trx에서 해당 INSERT가 LOCK WAIT 상태라는 증거를 찾지 못함: $snapshot",
         )
     }
 
-    /** [querySnapshot]의 조회 결과. 실패 시 assertion 메시지에 그대로 찍혀 디버깅에 쓰인다. */
-    private data class GapLockSnapshot(
+    @Test
+    fun `status에 인덱스가 없어, product_id 스캔 중 만난 non-AVAILABLE row도 잠긴다`() {
+        // id 오름차순으로 RESERVED, RESERVED, AVAILABLE이 되도록 만든다. findAvailableForUpdate는
+        // product_id 인덱스로 스캔하며 status를 추가 조건으로 거르는데(status 미인덱스, 2026-09-15
+        // ADR 참고), InnoDB는 "이 인덱스 범위에서 조건을 만족하는 조건을 찾을 때까지 examine한
+        // 모든 row"를 잠근다 — 최종적으로 매칭되지 않은 앞의 두 RESERVED row까지 포함해서.
+        val product = productService.createProduct("gap lock A2 테스트 상품", null, BigDecimal.TEN, 3)
+        val firstReserved = purchaseService.reserve(product.id!!, "buyer-1")
+        purchaseService.reserve(product.id!!, "buyer-2")
+        check(firstReserved.status == PurchaseAttemptStatus.RESERVED) {
+            "테스트 전제 조건(앞 두 유닛 선점)이 깨졌다: ${firstReserved.status}"
+        }
+        val nonMatchingUnitId = firstReserved.inventoryUnit!!.id!!
+
+        val executor = Executors.newFixedThreadPool(2)
+        val scannedLatch = CountDownLatch(1) // 스레드1: FOR UPDATE 스캔 완료(AVAILABLE 1건 확인), 커밋은 아직 보류
+        val updateStartedLatch = CountDownLatch(1) // 스레드2: non-AVAILABLE row UPDATE 호출 직전
+        val updateDoneLatch = CountDownLatch(1) // 스레드2: UPDATE가 리턴함(블로킹이 풀림)
+        val okToCommitLatch = CountDownLatch(1) // 메인 스레드: 락 스냅샷 확인 후 스레드1에게 커밋 허가
+        val errors = ConcurrentLinkedQueue<Throwable>()
+
+        val commitInitiatedAtNanos = AtomicLong(-1)
+        val updateCompletedAtNanos = AtomicLong(-1)
+
+        executor.submit {
+            try {
+                val status = transactionManager.getTransaction(DefaultTransactionDefinition())
+                val found = inventoryUnitRepository.findAvailableForUpdate(product.id!!, PageRequest.of(0, 1))
+                check(found.size == 1) { "AVAILABLE 유닛이 정확히 1개여야 시나리오 전제가 맞다: $found" }
+                scannedLatch.countDown()
+                okToCommitLatch.await(10, TimeUnit.SECONDS)
+                commitInitiatedAtNanos.set(System.nanoTime())
+                transactionManager.commit(status)
+            } catch (ex: Throwable) {
+                errors.add(ex)
+                scannedLatch.countDown()
+            }
+        }
+        scannedLatch.await(10, TimeUnit.SECONDS)
+
+        // 스레드2는 프로덕션 코드 경로(JPA)가 아니라 raw JDBC로 non-AVAILABLE row를 직접
+        // UPDATE한다 — 목적이 "이 특정 row가 잠겨 있는가"를 순수하게 probing하는 것이라,
+        // JPA dirty-checking 여부에 기대지 않고 명시적으로 그 row를 건드린다.
+        executor.submit {
+            dataSource.connection.use { conn ->
+                try {
+                    conn.autoCommit = false
+                    updateStartedLatch.countDown()
+                    conn.prepareStatement("UPDATE inventory_unit SET unit_code = ? WHERE id = ?").use { stmt ->
+                        stmt.setString(1, "probed-${System.nanoTime()}")
+                        stmt.setLong(2, nonMatchingUnitId)
+                        stmt.executeUpdate()
+                    }
+                    updateCompletedAtNanos.set(System.nanoTime())
+                    updateDoneLatch.countDown()
+                    conn.commit()
+                } catch (ex: Throwable) {
+                    errors.add(ex)
+                    updateDoneLatch.countDown()
+                }
+            }
+        }
+
+        updateStartedLatch.await(10, TimeUnit.SECONDS)
+        Thread.sleep(300) // 스레드2가 실제로 블로킹 상태에 들어갈 시간을 준다
+
+        // 1) 타이밍/래치로 "진짜 블로킹됐다"를 먼저 확인한다 (B3 전반부).
+        assertEquals(1L, updateDoneLatch.count, "UPDATE가 블로킹되지 않고 즉시 끝났다 — non-AVAILABLE row가 잠기지 않았다는 뜻")
+
+        // 2) 블로킹 중인 그 순간, 별도 raw JDBC 커넥션으로 해당 row의 락 상태를 스냅샷 조회한다 (B3 후반부).
+        val snapshot = pollForLockSnapshot(
+            isMatchingLock = { lockType, _, lockStatus, lockData ->
+                lockType == "RECORD" && lockStatus == "WAITING" && lockData == nonMatchingUnitId.toString()
+            },
+            isMatchingTrxQuery = { it.contains("update inventory_unit", ignoreCase = true) },
+        )
+
+        okToCommitLatch.countDown()
+        val completed = updateDoneLatch.await(10, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        assertTrue(errors.isEmpty(), "스레드에서 예상치 못한 예외 발생: $errors")
+        assertTrue(completed, "커밋 허가 이후에도 UPDATE가 끝나지 않음")
+
+        // 3) 인과관계 검증: UPDATE 완료 시각이 커밋을 시도한 시각보다 앞설 수 없다.
+        assertTrue(
+            updateCompletedAtNanos.get() >= commitInitiatedAtNanos.get(),
+            "UPDATE가 스레드1이 커밋을 시도하기 전에 완료됨 — 블로킹되지 않았다는 뜻",
+        )
+
+        // 4) 잠긴 대상이 실제로 이 non-AVAILABLE row(PK=nonMatchingUnitId)라는 증거를 남긴다.
+        assertTrue(
+            snapshot.hasMatchingWaitingLock,
+            "블로킹된 UPDATE가 id=$nonMatchingUnitId row에 대한 WAITING record lock 증거를 찾지 못함: $snapshot",
+        )
+        assertTrue(
+            snapshot.hasMatchingLockWaitTrx,
+            "innodb_trx에서 해당 UPDATE가 LOCK WAIT 상태라는 증거를 찾지 못함: $snapshot",
+        )
+    }
+
+    /**
+     * [pollForLockSnapshot]/[queryLockSnapshot]의 조회 결과. 실패 시 assertion 메시지에 그대로
+     * 찍혀 디버깅에 쓰인다.
+     *
+     * A4(재입고 INSERT gap lock)와 A2(non-AVAILABLE row 잠금) 두 시나리오가 "어떤 락/트랜잭션을
+     * 매칭 조건으로 볼지"만 다르고 조회 대상 테이블·컬럼은 동일해서, 그 판정 결과만 담는
+     * 공통 타입으로 합쳤다. 필드명을 `hasMatchingWaitingLock`/`hasMatchingLockWaitTrx`로 일반화한
+     * 이유도 같다 — "INSERT_INTENTION"이나 "특정 PK" 같은 시나리오별 의미는 호출부의 람다
+     * 이름/주석에 남기고, 여기서는 그 결과만 표현한다.
+     */
+    private data class LockSnapshot(
         val dataLocksRows: List<String>,
-        val hasWaitingInsertIntention: Boolean,
-        val hasLockWaitTrxForInsert: Boolean,
+        val hasMatchingWaitingLock: Boolean,
+        val hasMatchingLockWaitTrx: Boolean,
     )
 
     /**
-     * gap lock 증거가 잡힐 때까지 [maxAttempts]회까지 [delayMillis] 간격으로 재시도한다.
+     * 원하는 락 증거가 잡힐 때까지 [maxAttempts]회까지 [delayMillis] 간격으로 재시도한다.
      *
      * 스냅샷 조회 시점이 늦으면 관측하려는 락이 이미 풀렸을 수 있다는 게 B3 방법론의 알려진
      * 한계다(2026-09-15 ADR). 완전히 안정적으로 만들 수는 없으므로, 테스트를 과도하게 느리게
      * 만들지 않는 선에서(최대 5회 × 100ms) 최소한의 재시도만 둔다.
+     *
+     * @param isMatchingLock `performance_schema.data_locks`의 한 행(LOCK_TYPE, LOCK_MODE,
+     *   LOCK_STATUS, LOCK_DATA)이 이 시나리오가 찾는 WAITING 락인지 판정한다.
+     * @param isMatchingTrxQuery `information_schema.innodb_trx`의 `trx_query`가 이 시나리오가
+     *   찾는 LOCK WAIT 트랜잭션(예: INSERT/UPDATE 문)인지 판정한다.
      */
-    private fun pollForGapLockSnapshot(maxAttempts: Int = 5, delayMillis: Long = 100): GapLockSnapshot {
+    private fun pollForLockSnapshot(
+        maxAttempts: Int = 5,
+        delayMillis: Long = 100,
+        isMatchingLock: (lockType: String, lockMode: String, lockStatus: String, lockData: String) -> Boolean,
+        isMatchingTrxQuery: (String) -> Boolean,
+    ): LockSnapshot {
         repeat(maxAttempts) { attempt ->
-            val snapshot = querySnapshot()
-            if (snapshot.hasWaitingInsertIntention && snapshot.hasLockWaitTrxForInsert) return snapshot
+            val snapshot = queryLockSnapshot(isMatchingLock, isMatchingTrxQuery)
+            if (snapshot.hasMatchingWaitingLock && snapshot.hasMatchingLockWaitTrx) return snapshot
             if (attempt < maxAttempts - 1) Thread.sleep(delayMillis)
         }
-        return querySnapshot()
+        return queryLockSnapshot(isMatchingLock, isMatchingTrxQuery)
     }
 
     /**
      * `performance_schema.data_locks`와 `information_schema.innodb_trx`를 raw JDBC로 1회
-     * 조회해 [GapLockSnapshot]을 만든다.
+     * 조회해 [LockSnapshot]을 만든다. 판정 로직은 [isMatchingLock]/[isMatchingTrxQuery] 람다로
+     * 호출부(A4/A2 테스트)에서 주입받는다.
      *
      * Spring이 관리하는 [DataSource]에서 커넥션을 직접 빌려 쓴다 — 이 커넥션은 테스트 스레드들의
      * 트랜잭션과 무관한 별도 세션이어야, 관찰하려는 락 상태에 스스로 관여하지 않는다(자동 커밋
      * 커넥션이라 조회 자체가 즉시 끝나고 락을 남기지 않는다).
      */
-    private fun querySnapshot(): GapLockSnapshot {
+    private fun queryLockSnapshot(
+        isMatchingLock: (lockType: String, lockMode: String, lockStatus: String, lockData: String) -> Boolean,
+        isMatchingTrxQuery: (String) -> Boolean,
+    ): LockSnapshot {
         dataSource.connection.use { conn ->
             val rows = mutableListOf<String>()
-            var hasWaitingInsertIntention = false
+            var hasMatchingWaitingLock = false
             conn.createStatement().use { stmt ->
                 stmt.executeQuery(
                     """
@@ -225,14 +354,18 @@ class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
                         val lockStatus = rs.getString("LOCK_STATUS")
                         val lockData = rs.getString("LOCK_DATA")
                         rows.add("$lockType/$lockMode/$lockStatus/$lockData")
-                        if (lockType == "RECORD" && lockStatus == "WAITING" && lockMode.contains("INSERT_INTENTION")) {
-                            hasWaitingInsertIntention = true
+                        // data_locks에는 TABLE 레벨 락 행도 섞여 있고 그런 행은 LOCK_DATA가 NULL이다.
+                        // isMatchingLock 파라미터가 non-null String이라 null을 그대로 넘기면 Kotlin이
+                        // 호출부에서 인자 null 체크를 하다 NPE를 던지므로, 비교 목적상 의미가 같은
+                        // 빈 문자열로 방어한다(빈 문자열은 "RECORD"/PK 값과 결코 매칭되지 않는다).
+                        if (isMatchingLock(lockType ?: "", lockMode ?: "", lockStatus ?: "", lockData ?: "")) {
+                            hasMatchingWaitingLock = true
                         }
                     }
                 }
             }
 
-            var hasLockWaitTrxForInsert = false
+            var hasMatchingLockWaitTrx = false
             conn.createStatement().use { stmt ->
                 stmt.executeQuery(
                     """
@@ -243,14 +376,14 @@ class PurchaseServiceGapLockConcurrencyTest @Autowired constructor(
                 ).use { rs ->
                     while (rs.next()) {
                         val query = rs.getString("trx_query") ?: ""
-                        if (query.contains("insert into inventory_unit", ignoreCase = true)) {
-                            hasLockWaitTrxForInsert = true
+                        if (isMatchingTrxQuery(query)) {
+                            hasMatchingLockWaitTrx = true
                         }
                     }
                 }
             }
 
-            return GapLockSnapshot(rows, hasWaitingInsertIntention, hasLockWaitTrxForInsert)
+            return LockSnapshot(rows, hasMatchingWaitingLock, hasMatchingLockWaitTrx)
         }
     }
 }
