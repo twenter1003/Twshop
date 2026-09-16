@@ -70,6 +70,9 @@ Spring 컨텍스트를 띄우지 않는 순수 도메인 로직 테스트. `Inve
 | `PurchaseServiceConcurrencyTest` | concurrency | 비관적/낙관적 락 경합, 멀티스레드 |
 | `PurchaseServiceGapLockConcurrencyTest` | concurrency | gap lock/record lock, 멀티스레드 + 락 스냅샷 조회 |
 | `PurchaseReserveBenchmark` | benchmark | 처리량 실측, 기본 실행 제외 |
+| `WaitingServiceTest` | integration | `@SpringBootTest`, 실 Redis 위에서 진입/순번 조회, 단일 스레드 |
+| `WaitingControllerTest` | integration | MockMvc로 HTTP 계약 검증, 단일 스레드 |
+| `WaitingServiceConcurrencyTest` | concurrency | Redis `INCR` 기반 시퀀스 유일성, 멀티스레드 |
 
 ## 관련 ADR
 

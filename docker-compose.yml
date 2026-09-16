@@ -25,5 +25,13 @@ services:
       timeout: 5s
       retries: 20
 
+  # Waiting 모듈 대기열 저장소 (2026-09-16 "Waiting 모듈 대기열 설계" ADR 참고). 대기열은
+  # source of truth가 Redis 자체이지만 재기동 시 초기화돼도 치명적이지 않은 휘발성 상태로
+  # 취급하기로 했으므로, 영속 볼륨을 굳이 붙이지 않았다.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
 volumes:
   twshop-mysql-data:

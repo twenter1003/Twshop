@@ -25,6 +25,9 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
+	// Waiting 모듈의 대기열 저장소로 Redis(Sorted Set + INCR)를 쓰기로 결정 (2026-09-16
+	// "Waiting 모듈 대기열 설계" ADR, docs/decisions.md 참고). Lettuce 클라이언트가 기본 포함된다.
+	implementation("org.springframework.boot:spring-boot-starter-data-redis")
 	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("org.flywaydb:flyway-core")
